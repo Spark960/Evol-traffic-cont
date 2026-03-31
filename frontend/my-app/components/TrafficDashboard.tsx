@@ -240,14 +240,16 @@ function IntersectionView({
     };
 
     // N light (south-facing, sits above intersection)
-    drawLight(cx + boxHalf + 12, cy - boxHalf / 2, state.lights.NS);
-    // S light
-    drawLight(cx - boxHalf - 12, cy + boxHalf / 2, state.lights.NS);
-    // E light
-    drawLight(cx + boxHalf / 2, cy + boxHalf + 12, state.lights.EW);
-    // W light
-    drawLight(cx - boxHalf / 2, cy - boxHalf - 12, state.lights.EW);
-
+    drawLight(cx - boxHalf / 2, cy - boxHalf - 12, state.lights.NS);
+    
+    // S light (on the bottom road)
+    drawLight(cx + boxHalf / 2, cy + boxHalf + 12, state.lights.NS);
+    
+    // E light (on the right road)
+    drawLight(cx + boxHalf + 12, cy - boxHalf / 2, state.lights.EW);
+    
+    // W light (on the left road)
+    drawLight(cx - boxHalf - 12, cy + boxHalf / 2, state.lights.EW);
     // ── Vehicle queues ──
     const carW = 10,
       carH = 6,
