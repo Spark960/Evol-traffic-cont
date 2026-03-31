@@ -40,7 +40,7 @@ from server.api import create_app, init_api
 
 TICK_RATE_MS        = 100       # 100 ms → 10 ticks per second
 TICK_DURATION       = TICK_RATE_MS / 1000.0  # 0.1 seconds
-GA_EVOLVE_INTERVAL  = 60.0     # Re-evolve GA every 60 simulated seconds
+GA_EVOLVE_INTERVAL  = 20.0     # Re-evolve GA every 60 simulated seconds
 EMERGENCY_CHECK_INTERVAL = 5.0 # Check for RFID events every 5 sim-seconds
 WARM_UP_TICKS       = 100      # Skip first 100 ticks for metrics (10s warm-up)
 SIM_SPEED_MULTIPLIER = 10      # 1 tick = 1 simulated second (speed up 10x)
