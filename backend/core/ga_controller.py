@@ -48,15 +48,14 @@ from core.vehicle_physics import (
 
 @dataclass
 class GAConfig:
-    """Tuneable hyper-parameters for the GA."""
-    population_size: int   = 20
-    generations: int       = 30
+    population_size: int   = 30    # was 20
+    generations: int       = 50    # was 30
     tournament_k: int      = 3
     crossover_rate: float  = 0.80
     mutation_rate: float   = 0.10
     mutation_sigma: float  = 5.0
     elitism_count: int     = 2
-    eval_cycles: int       = 2        # Mini-sim runs this many full cycles
+    eval_cycles: int       = 2
     random_seed: Optional[int] = None
 
 
@@ -87,31 +86,16 @@ def _enforce_constraints(chrom: np.ndarray) -> np.ndarray:
 def _evaluate_fitness(
     chromosome: np.ndarray,
     queue_snapshot: dict[str, int],
-    num_cycles: int = 2,        # kept for API compatibility
-    arrival_rate: float = 0.3,  # kept for API compatibility
+    num_cycles: int = 2,
+    arrival_rate: float = 0.3,
 ) -> float:
     """
-    Evaluate fitness using a traffic-engineering approach based on
-    Webster's delay formula.
-
-    For each phase, computes the average delay experienced by vehicles
-    on that approach given the proposed green duration and current demand.
-    The total fitness is the weighted average delay across all approaches,
-    weighted by the number of vehicles (more vehicles = more weight).
-
-    Webster's uniform delay:
-        d = C(1-g/C)² / 2(1 - min(x, 1.0) * g/C)
-
-    where:
-        C = total cycle length
-        g = effective green for this phase
-        x = degree of saturation = flow / capacity
-
-    Fitness = 1 / (1 + total_weighted_delay)
+    Residual-queue fitness: reward chromosomes that clear the most
+    vehicles per cycle, proportional to demand.
+    Short cycles are NOT rewarded — capacity is what matters.
     """
     ns_green = chromosome[0]
     ew_green = chromosome[1]
-    cycle_length = ns_green + ew_green + 2 * YELLOW_DURATION
 
     ns_demand = queue_snapshot.get("N", 0) + queue_snapshot.get("S", 0)
     ew_demand = queue_snapshot.get("E", 0) + queue_snapshot.get("W", 0)
@@ -120,39 +104,31 @@ def _evaluate_fitness(
     if total_demand == 0:
         return 1.0
 
-    # Capacity per phase = saturation_flow_rate * green_time * num_approaches
-    # Each approach has saturation flow of SATURATION_FLOW_RATE veh/s
-    ns_capacity = SATURATION_FLOW_RATE * ns_green * 2  # N and S approaches
-    ew_capacity = SATURATION_FLOW_RATE * ew_green * 2  # E and W approaches
+    # Vehicles that CAN be cleared in one cycle per phase
+    # SATURATION_FLOW_RATE veh/s × green_time × 2 approaches
+    ns_capacity = SATURATION_FLOW_RATE * ns_green * 2
+    ew_capacity = SATURATION_FLOW_RATE * ew_green * 2
 
-    # Arrivals per cycle (estimate from current queue — treat queue as
-    # a proxy for demand per cycle)
-    ns_flow_per_cycle = ns_demand * 0.5  # Conservative estimate
-    ew_flow_per_cycle = ew_demand * 0.5
+    # Vehicles NOT cleared = residual queue = future delay
+    ns_residual = max(0.0, ns_demand - ns_capacity)
+    ew_residual = max(0.0, ew_demand - ew_capacity)
+    total_residual = ns_residual + ew_residual
 
-    # Degree of saturation (capped at 1.0 for formula stability)
-    x_ns = min(ns_flow_per_cycle / max(ns_capacity, 0.01), 0.98)
-    x_ew = min(ew_flow_per_cycle / max(ew_capacity, 0.01), 0.98)
+    # Penalise starving the busier direction:
+    # If NS has 80% of demand but only 30% of green time, that's bad
+    ns_demand_ratio = ns_demand / total_demand
+    ew_demand_ratio = ew_demand / total_demand
+    ns_green_ratio = ns_green / (ns_green + ew_green)
+    ew_green_ratio = ew_green / (ns_green + ew_green)
 
-    # Webster's uniform delay formula for each phase
-    def webster_delay(green: float, x: float) -> float:
-        g_ratio = green / cycle_length
-        numerator = cycle_length * (1 - g_ratio) ** 2
-        denominator = 2.0 * (1.0 - x * g_ratio)
-        if denominator <= 0.01:
-            return cycle_length  # Saturated — max delay
-        return numerator / denominator
+    # Imbalance = how far green allocation is from demand-proportional
+    imbalance = (
+        abs(ns_demand_ratio - ns_green_ratio) * ns_demand +
+        abs(ew_demand_ratio - ew_green_ratio) * ew_demand
+    )
 
-    delay_ns = webster_delay(ns_green, x_ns)
-    delay_ew = webster_delay(ew_green, x_ew)
-
-    # Weighted average delay
-    total_weighted_delay = (
-        delay_ns * ns_demand + delay_ew * ew_demand
-    ) / total_demand
-
-    fitness = 1.0 / (1.0 + total_weighted_delay)
-    return fitness
+    cost = total_residual + 0.5 * imbalance
+    return 1.0 / (1.0 + cost)
 
 
 # ── GA Controller ───────────────────────────────────────────────────────────
