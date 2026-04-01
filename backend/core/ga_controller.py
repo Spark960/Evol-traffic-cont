@@ -56,6 +56,7 @@ class GAConfig:
     mutation_sigma: float  = 5.0
     elitism_count: int     = 2
     eval_cycles: int       = 2
+    arrival_rate: float    = 0.3   # veh/s — overridden by main.py with real data
     random_seed: Optional[int] = None
 
 
@@ -80,21 +81,25 @@ def _enforce_constraints(chrom: np.ndarray) -> np.ndarray:
         chrom = np.clip(chrom, MIN_GREEN, MAX_GREEN)
     return chrom
 
+# ── Fitness evaluation — fixed-horizon residual-queue simulation ──────────────
 
-# ── Fitness evaluation — multi-cycle residual-queue simulation ────────────────
+# All chromosomes are evaluated over this many simulated seconds,
+# regardless of their cycle length.  This ensures fair comparison.
+EVAL_HORIZON_SECONDS = 120.0
 
 def _evaluate_fitness(
     chromosome: np.ndarray,
     queue_snapshot: dict[str, int],
-    num_cycles: int = 2,
+    num_cycles: int = 2,        # ignored — kept for API compat
     arrival_rate: float = 0.3,
 ) -> float:
     """
-    Multi-cycle residual-queue fitness.
+    Fixed-horizon residual-queue fitness.
 
-    Simulates *num_cycles* full signal cycles from the current queue snapshot.
-    Between cycles, new vehicles arrive at *arrival_rate* veh/s, distributed
-    proportionally to current demand. Lower residual queue → higher fitness.
+    Simulates EVAL_HORIZON_SECONDS of traffic from the current queue
+    snapshot.  Each chromosome naturally runs a different number of
+    full signal cycles within that window (short cycles → more
+    iterations, long cycles → fewer), keeping total arrivals fair.
     """
     ns_green = chromosome[0]
     ew_green = chromosome[1]
@@ -110,30 +115,44 @@ def _evaluate_fitness(
     ns_demand_ratio = ns_demand / total_demand
     ew_demand_ratio = ew_demand / total_demand
 
-    # Duration of one full signal cycle (both greens + two yellows)
-    cycle_time = ns_green + ew_green + 2 * YELLOW_DURATION
-
-    # Max vehicles dischargeable per phase per cycle (2 approaches each)
-    ns_capacity = SATURATION_FLOW_RATE * ns_green * 2
-    ew_capacity = SATURATION_FLOW_RATE * ew_green * 2
-
-    # Multi-cycle simulation
+    # Simulate exactly EVAL_HORIZON_SECONDS
     ns_queue = float(ns_demand)
     ew_queue = float(ew_demand)
-    total_wait = 0.0
 
-    for _ in range(num_cycles):
-        # All currently queued vehicles accumulate wait for this cycle
-        total_wait += (ns_queue + ew_queue) * cycle_time
+    time_elapsed = 0.0
+    while time_elapsed < EVAL_HORIZON_SECONDS:
+        # Phase 1: NS Green
+        step = min(ns_green, EVAL_HORIZON_SECONDS - time_elapsed)
+        arrivals_ns = arrival_rate * step * ns_demand_ratio
+        arrivals_ew = arrival_rate * step * ew_demand_ratio
+        cleared = min(ns_queue + arrivals_ns, SATURATION_FLOW_RATE * step * 2)
+        ns_queue = ns_queue + arrivals_ns - cleared
+        ew_queue += arrivals_ew
+        time_elapsed += step
+        if time_elapsed >= EVAL_HORIZON_SECONDS: break
 
-        # Discharge (capped at queue size)
-        ns_queue -= min(ns_queue, ns_capacity)
-        ew_queue -= min(ew_queue, ew_capacity)
+        # Phase 2: NS Yellow
+        step = min(YELLOW_DURATION, EVAL_HORIZON_SECONDS - time_elapsed)
+        ns_queue += arrival_rate * step * ns_demand_ratio
+        ew_queue += arrival_rate * step * ew_demand_ratio
+        time_elapsed += step
+        if time_elapsed >= EVAL_HORIZON_SECONDS: break
 
-        # New arrivals between cycles
-        new_arrivals = arrival_rate * cycle_time
-        ns_queue += new_arrivals * ns_demand_ratio
-        ew_queue += new_arrivals * ew_demand_ratio
+        # Phase 3: EW Green
+        step = min(ew_green, EVAL_HORIZON_SECONDS - time_elapsed)
+        arrivals_ns = arrival_rate * step * ns_demand_ratio
+        arrivals_ew = arrival_rate * step * ew_demand_ratio
+        cleared = min(ew_queue + arrivals_ew, SATURATION_FLOW_RATE * step * 2)
+        ns_queue += arrivals_ns
+        ew_queue = ew_queue + arrivals_ew - cleared
+        time_elapsed += step
+        if time_elapsed >= EVAL_HORIZON_SECONDS: break
+
+        # Phase 4: EW Yellow
+        step = min(YELLOW_DURATION, EVAL_HORIZON_SECONDS - time_elapsed)
+        ns_queue += arrival_rate * step * ns_demand_ratio
+        ew_queue += arrival_rate * step * ew_demand_ratio
+        time_elapsed += step
 
     total_residual = ns_queue + ew_queue
 
@@ -145,7 +164,7 @@ def _evaluate_fitness(
         abs(ew_demand_ratio - ew_green_ratio) * ew_demand
     )
 
-    cost = total_residual + 0.3 * imbalance + 0.01 * total_wait
+    cost = total_residual + 0.3 * imbalance
     return 1.0 / (1.0 + cost)
 
 
@@ -219,7 +238,11 @@ class GAController:
         for gen in range(cfg.generations):
             # 2. Evaluate fitness
             fitnesses = np.array([
-                _evaluate_fitness(ind, current_queues, cfg.eval_cycles)
+                _evaluate_fitness(
+                    ind, current_queues,
+                    num_cycles=cfg.eval_cycles,
+                    arrival_rate=cfg.arrival_rate,
+                )
                 for ind in population
             ])
 

@@ -50,7 +50,7 @@ class TrafficGenerator:
 
         # --- DEMO MULTIPLIER ---
         # Multiply the Kaggle volume by 15 so the intersection gets packed quickly
-        DEMO_VOLUME_MULTIPLIER = 5.0 
+        DEMO_VOLUME_MULTIPLIER = 15.0 
 
         arrivals = {}
         for direction in ["N", "S", "E", "W"]:

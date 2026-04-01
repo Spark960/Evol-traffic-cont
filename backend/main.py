@@ -252,8 +252,16 @@ def main():
 
     # Controller
     if args.mode == "ga":
+        # Compute real arrival rate from traffic data for the GA's fitness function
+        peak_volume = traffic_gen.get_hourly_volume(args.hour)
+        # DEMO_VOLUME_MULTIPLIER is applied in traffic_gen, so mirror it here
+        real_arrival_rate = (peak_volume * 15.0) / 3600.0  # total veh/s across all directions
+        print(f"  Arrival Rate : {real_arrival_rate:.2f} veh/s (for GA fitness)")
         controller = GAController(
-            config=GAConfig(random_seed=args.seed)
+            config=GAConfig(
+                random_seed=args.seed,
+                arrival_rate=real_arrival_rate,
+            )
         )
     else:
         controller = FixedTimeController(ns_green=30.0, ew_green=30.0)
