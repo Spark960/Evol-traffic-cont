@@ -59,6 +59,16 @@ class TrafficGenerator:
             arrivals[direction] = int(self.rng.poisson(lam))
 
         return arrivals
+
+    def get_hourly_volume(self, hour: int) -> float:
+        """Total volume across all directions for a given hour."""
+        vols = self.hourly_volumes.get(hour % 24, {"N": 0.0, "S": 0.0, "E": 0.0, "W": 0.0})
+        return sum(vols.values())
+
+    def get_all_hourly_volumes(self) -> dict[int, float]:
+        """Total volume per hour for all 24 hours."""
+        return {h: sum(v.values()) for h, v in self.hourly_volumes.items()}
+
     # ── Internals ───────────────────────────────────────────────────────
 
     def _load_csv(self, csv_path: str | Path) -> None:

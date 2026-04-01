@@ -81,7 +81,7 @@ def _enforce_constraints(chrom: np.ndarray) -> np.ndarray:
     return chrom
 
 
-# ── Fitness evaluation using Webster's delay formula ─────────────────────────
+# ── Fitness evaluation — multi-cycle residual-queue simulation ────────────────
 
 def _evaluate_fitness(
     chromosome: np.ndarray,
@@ -90,9 +90,11 @@ def _evaluate_fitness(
     arrival_rate: float = 0.3,
 ) -> float:
     """
-    Residual-queue fitness: reward chromosomes that clear the most
-    vehicles per cycle, proportional to demand.
-    Short cycles are NOT rewarded — capacity is what matters.
+    Multi-cycle residual-queue fitness.
+
+    Simulates *num_cycles* full signal cycles from the current queue snapshot.
+    Between cycles, new vehicles arrive at *arrival_rate* veh/s, distributed
+    proportionally to current demand. Lower residual queue → higher fitness.
     """
     ns_green = chromosome[0]
     ew_green = chromosome[1]
@@ -104,30 +106,46 @@ def _evaluate_fitness(
     if total_demand == 0:
         return 1.0
 
-    # Vehicles that CAN be cleared in one cycle per phase
-    # SATURATION_FLOW_RATE veh/s × green_time × 2 approaches
+    # Demand split for proportional arrival distribution
+    ns_demand_ratio = ns_demand / total_demand
+    ew_demand_ratio = ew_demand / total_demand
+
+    # Duration of one full signal cycle (both greens + two yellows)
+    cycle_time = ns_green + ew_green + 2 * YELLOW_DURATION
+
+    # Max vehicles dischargeable per phase per cycle (2 approaches each)
     ns_capacity = SATURATION_FLOW_RATE * ns_green * 2
     ew_capacity = SATURATION_FLOW_RATE * ew_green * 2
 
-    # Vehicles NOT cleared = residual queue = future delay
-    ns_residual = max(0.0, ns_demand - ns_capacity)
-    ew_residual = max(0.0, ew_demand - ew_capacity)
-    total_residual = ns_residual + ew_residual
+    # Multi-cycle simulation
+    ns_queue = float(ns_demand)
+    ew_queue = float(ew_demand)
+    total_wait = 0.0
 
-    # Penalise starving the busier direction:
-    # If NS has 80% of demand but only 30% of green time, that's bad
-    ns_demand_ratio = ns_demand / total_demand
-    ew_demand_ratio = ew_demand / total_demand
+    for _ in range(num_cycles):
+        # All currently queued vehicles accumulate wait for this cycle
+        total_wait += (ns_queue + ew_queue) * cycle_time
+
+        # Discharge (capped at queue size)
+        ns_queue -= min(ns_queue, ns_capacity)
+        ew_queue -= min(ew_queue, ew_capacity)
+
+        # New arrivals between cycles
+        new_arrivals = arrival_rate * cycle_time
+        ns_queue += new_arrivals * ns_demand_ratio
+        ew_queue += new_arrivals * ew_demand_ratio
+
+    total_residual = ns_queue + ew_queue
+
+    # Penalise starving the busier direction
     ns_green_ratio = ns_green / (ns_green + ew_green)
     ew_green_ratio = ew_green / (ns_green + ew_green)
-
-    # Imbalance = how far green allocation is from demand-proportional
     imbalance = (
         abs(ns_demand_ratio - ns_green_ratio) * ns_demand +
         abs(ew_demand_ratio - ew_green_ratio) * ew_demand
     )
 
-    cost = total_residual + 0.5 * imbalance
+    cost = total_residual + 0.3 * imbalance + 0.01 * total_wait
     return 1.0 / (1.0 + cost)
 
 

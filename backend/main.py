@@ -22,6 +22,7 @@ import threading
 import time
 import sys
 import os
+from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -228,12 +229,19 @@ def main():
     print(f"  API Port   : {args.port}")
     print("=" * 60)
 
-    # Data pipeline
+    # Data pipeline — auto-detect CSVs in data/ directory
+    data_dir = Path(__file__).resolve().parent / "data"
+    traffic_csv = args.traffic_csv or str(data_dir / "big.csv")
+    rfid_csv = args.rfid_csv or str(data_dir / "small.csv")
+
     traffic_gen = TrafficGenerator(
-        csv_path=args.traffic_csv,
+        csv_path=traffic_csv,
         random_seed=args.seed,
     )
-    rfid_handler = RFIDHandler(csv_path=args.rfid_csv)
+    rfid_handler = RFIDHandler(csv_path=rfid_csv)
+
+    print(f"  Traffic Data : {traffic_csv}")
+    print(f"  RFID Data    : {rfid_csv}")
 
     # Intersection
     intersection = Intersection(
