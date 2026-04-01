@@ -120,21 +120,35 @@ def _evaluate_fitness(
     ew_queue = float(ew_demand)
 
     time_elapsed = 0.0
+    cumulative_wait = 0.0
+
     while time_elapsed < EVAL_HORIZON_SECONDS:
         # Phase 1: NS Green
         step = min(ns_green, EVAL_HORIZON_SECONDS - time_elapsed)
         arrivals_ns = arrival_rate * step * ns_demand_ratio
         arrivals_ew = arrival_rate * step * ew_demand_ratio
         cleared = min(ns_queue + arrivals_ns, SATURATION_FLOW_RATE * step * 2)
-        ns_queue = ns_queue + arrivals_ns - cleared
-        ew_queue += arrivals_ew
+        
+        q_ns_next = ns_queue + arrivals_ns - cleared
+        q_ew_next = ew_queue + arrivals_ew
+        cumulative_wait += ((ns_queue + q_ns_next) / 2.0 + (ew_queue + q_ew_next) / 2.0) * step
+        
+        ns_queue = q_ns_next
+        ew_queue = q_ew_next
         time_elapsed += step
         if time_elapsed >= EVAL_HORIZON_SECONDS: break
 
         # Phase 2: NS Yellow
         step = min(YELLOW_DURATION, EVAL_HORIZON_SECONDS - time_elapsed)
-        ns_queue += arrival_rate * step * ns_demand_ratio
-        ew_queue += arrival_rate * step * ew_demand_ratio
+        arrivals_ns = arrival_rate * step * ns_demand_ratio
+        arrivals_ew = arrival_rate * step * ew_demand_ratio
+        
+        q_ns_next = ns_queue + arrivals_ns
+        q_ew_next = ew_queue + arrivals_ew
+        cumulative_wait += ((ns_queue + q_ns_next) / 2.0 + (ew_queue + q_ew_next) / 2.0) * step
+        
+        ns_queue = q_ns_next
+        ew_queue = q_ew_next
         time_elapsed += step
         if time_elapsed >= EVAL_HORIZON_SECONDS: break
 
@@ -143,18 +157,31 @@ def _evaluate_fitness(
         arrivals_ns = arrival_rate * step * ns_demand_ratio
         arrivals_ew = arrival_rate * step * ew_demand_ratio
         cleared = min(ew_queue + arrivals_ew, SATURATION_FLOW_RATE * step * 2)
-        ns_queue += arrivals_ns
-        ew_queue = ew_queue + arrivals_ew - cleared
+        
+        q_ns_next = ns_queue + arrivals_ns
+        q_ew_next = ew_queue + arrivals_ew - cleared
+        cumulative_wait += ((ns_queue + q_ns_next) / 2.0 + (ew_queue + q_ew_next) / 2.0) * step
+        
+        ns_queue = q_ns_next
+        ew_queue = q_ew_next
         time_elapsed += step
         if time_elapsed >= EVAL_HORIZON_SECONDS: break
 
         # Phase 4: EW Yellow
         step = min(YELLOW_DURATION, EVAL_HORIZON_SECONDS - time_elapsed)
-        ns_queue += arrival_rate * step * ns_demand_ratio
-        ew_queue += arrival_rate * step * ew_demand_ratio
+        arrivals_ns = arrival_rate * step * ns_demand_ratio
+        arrivals_ew = arrival_rate * step * ew_demand_ratio
+        
+        q_ns_next = ns_queue + arrivals_ns
+        q_ew_next = ew_queue + arrivals_ew
+        cumulative_wait += ((ns_queue + q_ns_next) / 2.0 + (ew_queue + q_ew_next) / 2.0) * step
+        
+        ns_queue = q_ns_next
+        ew_queue = q_ew_next
         time_elapsed += step
 
-    total_residual = ns_queue + ew_queue
+    # Average queue length over the entire 120s evaluates total wait-time accurately
+    avg_queue_size = cumulative_wait / EVAL_HORIZON_SECONDS
 
     # Penalise starving the busier direction
     ns_green_ratio = ns_green / (ns_green + ew_green)
@@ -164,7 +191,7 @@ def _evaluate_fitness(
         abs(ew_demand_ratio - ew_green_ratio) * ew_demand
     )
 
-    cost = total_residual + 0.3 * imbalance
+    cost = avg_queue_size + 0.3 * imbalance
     return 1.0 / (1.0 + cost)
 
 

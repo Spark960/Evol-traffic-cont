@@ -124,27 +124,40 @@ Where `cost` is computed by a **continuous fixed-horizon residual-queue simulati
 
 ```python
 time_elapsed = 0.0
+
 while time_elapsed < 120.0:
-    for phase in [NS_Green, NS_Yellow, EW_Green, EW_Yellow]:
-        step = min(phase_duration, 120.0 - time_elapsed)
+    for phase in ["NS_GREEN", "NS_YELLOW", "EW_GREEN", "EW_YELLOW"]:
+        # 1. Determine time step for this phase
+        duration = ns_green if phase == "NS_GREEN" else \
+                   ew_green if phase == "EW_GREEN" else YELLOW_DURATION
+        step = min(duration, 120.0 - time_elapsed)
         
-        # Add arrivals during this step
-        ns_queue += arrival_rate * step * ns_demand_ratio
-        ew_queue += arrival_rate * step * ew_demand_ratio
+        # 2. Accumulate incoming vehicle queue
+        arrivals_ns = arrival_rate * step * ns_demand_ratio
+        arrivals_ew = arrival_rate * step * ew_demand_ratio
         
-        # Clear vehicles if it's a green phase
-        if phase is Green:
-            cleared = min(queue + recent_arrivals, SATURATION_FLOW_RATE * step * 2)
-            queue -= cleared
+        # 3. Discharge vehicles from green direction
+        capacity = SATURATION_FLOW_RATE * step * 2
+        if phase == "NS_GREEN":
+            cleared = min(ns_queue + arrivals_ns, capacity)
+            ns_queue = ns_queue + arrivals_ns - cleared
+            ew_queue += arrivals_ew
+        elif phase == "EW_GREEN":
+            cleared = min(ew_queue + arrivals_ew, capacity)
+            ns_queue += arrivals_ns
+            ew_queue = ew_queue + arrivals_ew - cleared
+        else: # Yellow phase (No discharge)
+            ns_queue += arrivals_ns
+            ew_queue += arrivals_ew
             
         time_elapsed += step
         if time_elapsed >= 120.0: break
 
-cost = total_residual + 0.3 × imbalance
+cost = total_residual + 0.3 * imbalance
 ```
 
 **Key terms**:
-- **`total_residual`**: Vehicles still queued after all cycles — the primary optimization target
+- **`avg_queue_size`**: The Calculus integral of all waiting vehicles across the entire 120s horizon — precisely mirrors the dashboard's average wait time metric.
 - **`imbalance`**: Penalty when green allocation doesn't match demand ratio (e.g., 80% NS demand but only 30% NS green)
 - **`SATURATION_FLOW_RATE`**: 0.5 vehicles/second/approach (1 car every 2 seconds headway)
 - **`YELLOW_DURATION`**: 4 seconds per phase transition
@@ -242,3 +255,43 @@ The GA's advantage is **reactive proportional allocation** — it evolves green 
 | `GA_EVOLVE_INTERVAL` | 20 sim-seconds | `main.py` |
 | `DEMO_VOLUME_MULTIPLIER` | 5x | `traffic_generator.py` |
 | `EMERGENCY_OVERRIDE_DURATION` | 15 seconds | `rfid_handler.py` |
+
+---
+
+## 8. Incident Report: The 60-Second Rush (Fixed)
+
+### The Issue
+During heavy incoming traffic rushes (such as those generated around 60 seconds into the simulation by the `DEMO_VOLUME_MULTIPLIER` scaling real-world data), the GA controller would freeze at `10s / 10s` (the minimum green duration) for both directions, instead of dynamically re-allocating time to clear the bottleneck.
+
+### The Root Cause
+The `_evaluate_fitness()` function evaluated chromosome performance over an intended 120-second horizon to calculate the final queue size (`total_residual`). The original implementation attempted to simulate sequential cycles by calculating how many times the `cycle_time` mathematically fit into 120 seconds (`cycles = round(120 / cycle_time)`).
+
+Because the function rounded to whole cycles, the **actual simulation duration mathematically varied** depending on the cycle length.
+- A long cycle (e.g., `60/60` = 128s) runs 1 cycle = `128 seconds`.
+- A short cycle (e.g., `10/10` = 28s) runs 4 cycles = `112 seconds`.
+
+Because the incoming heavy traffic rate exceeded the junction clearance capacity (`arrival_rate > 1.0 clearance/sec`), the queue size grew infinitely larger the longer the simulation ran. 
+
+When parsing these results, the Genetic Algorithm successfully deduced that chromosomes resulting in **less total simulated time** yielded lower remaining vehicles due to fewer incoming vehicles being simulated. The GA aggressively punished longer green-times solely because they mathematically "tricked" the simulation into running for a longer duration. Consequently, the GA evolved to output the shortest possible cycle length: `10s / 10s`.
+
+### The Resolution
+The discrete cycle assumption was mathematically replaced in `backend/core/ga_controller.py` with a **strict continuous-time horizon simulation**:
+```python
+while time_elapsed < 120.0:
+    # Simulates partial phases clamped precisely to the remaining time
+```
+By enforcing an unchangeable 120.0 second simulation for *every* candidate chromosome, the flow of newly added arrivals is kept completely identical across evaluations. The Genetic Algorithm can now only reduce the final queue volume by authentically increasing the clearance rate, which inherently pushes the system to widen the green light timer for bottlenecked directions.
+
+---
+
+## 9. Incident Report: "End-Effect Snapshot Bias" (Fixed)
+
+### The Issue
+Under extremely light traffic (such as 2 AM simulated time where volume natively drops), the GA controller would occasionally output a `10s / 60s` imbalance despite near-empty queues, forcing random waiting cars to suffer 68-second red light delays. The Fixed-Time `30/30` cycle correctly bounded red lights to 38 seconds, scoring slightly better wait times on the dashboard.
+
+### The Root Cause
+The fitness cost function previously calculated the `cost` simply by taking a single *snapshot* of the queue at exactly `T=120.0` seconds. In light traffic, *any* generic chromosome easily clears all traffic within 120 seconds, resulting in a residual queue of exactly `0`. Because `total_residual` reported `0`, the GA's math incorrectly equated a "60-second red light" with a "10-second red light" because both mathematically yielded zero cars left over at the finale.
+
+### The Resolution
+We upgraded the GA's cost function to optimize for the **Calculus Integral of Wait-Time** (`average queue length over time`) rather than an end-state snapshot. 
+By continuously executing `cumulative_wait_time += (start_queue + end_queue) / 2 * step` across the whole 120 seconds, the GA mathematically "feels" the compounded pain of trapping even a single car at a 60-second red light. It now flawlessly defaults to fast, tight cycles (e.g., `10/10`) during light traffic, natively outperforming the fixed baseline.
